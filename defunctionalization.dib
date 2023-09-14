@@ -1,0 +1,457 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"name":"csharp"},{"aliases":[],"languageName":"fsharp","name":"fsharp"}]}}
+
+#!markdown
+
+# Defunctionalize the Continuation!
+
+![Alt text](image-13.png)
+
+#!markdown
+
+- We're going to take a look at this neat technique for converting recursive functions into iterative functions.
+- There are a bunch of other interesting applications which we won't have time to cover today!
+- https://www.pathsensitive.com/2019/07/the-best-refactoring-youve-never-heard.html for more applications of the technique.
+
+#!markdown
+
+## Defunctionalization
+
+![Alt text](image-4.png)
+
+#!markdown
+
+- Defunctionalization is a program transformation technique to transform programs with higher-order functions (functions that take other functions as arguments or return them) into programs that only use first-order functions.
+- There's a couple of steps to perform this transformation:
+    - Replace function values with data values (represent the function as data)
+    - Replace function application with an interpreter (interpret the data representation of the function)
+- This transformation has a number of applications that we won't be covering here where it is useful to serialize a function
+    - Send a function across the network
+    - Persist a function to disk or to a database (e.g. to pause it and resume it later) 
+- Here we'll be looking at using it to convert recursion to iteration.
+
+#!markdown
+
+## Continuation Passing Style (CPS)
+
+![Alt text](image-7.png)
+
+#!markdown
+
+- This is a whole interesting topic in itself but we're just going to introduce the basics here needed to understand the next section.
+- In CPS, instead of a function returning a value that is used by the caller, the caller passes in a function (the _continuation_) that the called function will call, passing the value that would have been returned.
+- Let's look at a code example:
+
+#!csharp
+
+int Add(int a, int b) => a + b;
+
+var result = Add(1, 2);
+Console.WriteLine(result);
+
+#!csharp
+
+void AddCPS(int a, int b, Action<int> cont) => cont(a + b);
+
+AddCPS(1, 2, result => Console.WriteLine(result));
+
+#!markdown
+
+## Recursion to Iteration
+
+![Alt text](image-8.png)
+
+#!markdown
+
+- Let's look at a simple function to print a linked list in recursive and iterative forms
+
+#!csharp
+
+record List(int value, List next);
+
+List MakeList(IEnumerable<int> xs)
+{
+    List list = null;
+    foreach (var x in xs.Reverse())
+    {
+        list = new List(x, list);
+    }
+    return list;
+}
+
+var list = MakeList(new[] { 1, 2, 3 });
+
+#!markdown
+
+### Recursive
+
+#!csharp
+
+void PrintListRec(List l)
+{
+    if (l is null) return;
+    Console.Write($"{l.value}, ");        
+    PrintListRec(l.next);
+}
+
+PrintListRec(list);
+
+#!markdown
+
+### Iterative
+
+#!csharp
+
+void PrintListIter(List l)
+{
+    while (l is not null)
+    {
+        Console.Write($"{l.value}, ");
+        l = l.next;
+    }
+}
+
+PrintListIter(list);
+
+#!markdown
+
+## Tail Recursion
+
+![Alt text](image-2.png)
+
+#!markdown
+
+- Tail recursion is a special form of recursion where the recursive call is the last operation in the function. 
+- This means that the function doesn't need to do any additional work after the recursive call returns. 
+- Because of this property, tail recursion can be optimized by the compiler or interpreter to use constant stack space, effectively transforming the recursion into a loop and preventing stack overflow errors for deep recursive calls. 
+- This optimization is called Tail Call Optimization or Tail Call Elimination.
+- Many functional languages (like F#) guarantee that functions that can be optimized this way will be. 
+- This unfortunately is not true for many non functional languages like C#!
+
+#!markdown
+
+## Converting a tail recursive function to an iterative function
+
+![Alt text](image-10.png)
+
+#!markdown
+
+- In functions without Tail Call Elimination, a tail recursive function can cause a stack overflow for deep levels of recursion.
+- An iterative function avoids stack overflows and can also be more efficient and may be easier to debug.
+- A tail recursive function can be converted to an iterative function by wrapping the body of the function in a `while (true)` loop.
+- The recursion termination condition becomes a `break` out of the loop or a `return` from the whole function.
+- Where the recursive call would have happened, we just update the parameters and continue the loop.
+
+#!csharp
+
+// Tail Recursive
+void PrintListRec(List l)
+{
+    if (l is null) return;
+    Console.Write($"{l.value}, ");        
+    PrintListRec(l.next);
+}
+
+// Convert to iterative
+void PrintListIter(List l)
+{
+    while (true) // wrap body in while(true)
+    {
+        if (l is null) return; // return or break out of the loop on recursive base case
+        Console.Write($"{l.value}, ");
+        l = l.next; // update the parameters instead of making a recursive call and continue the loop
+    }
+}
+
+PrintListIter(list);
+
+#!markdown
+
+## Non Tail Recursive Functions
+
+![Alt text](image-11.png)
+
+#!markdown
+
+- For non tail recursive functions, it can be a bit more complex to make them iterative.
+- There are various approaches or recipes you can follow to do this.
+- We're going to look at one specific recipe: _Defunctionalize the Continuation_!
+- Let's look at printing a tree in order
+
+#!csharp
+
+record Tree(int value, Tree left, Tree right);
+
+var tree = new Tree(4, new Tree(2, new Tree(1, null, null), new Tree(3, null, null)), new Tree(5, null, null));
+
+#!markdown
+
+### Recursive
+
+#!csharp
+
+void PrintTree(Tree tree)
+{
+    if (tree is null) return;
+    PrintTree(tree.left);
+    Console.Write($"{tree.value}, ");
+    PrintTree(tree.right);
+}
+
+PrintTree(tree);
+
+#!markdown
+
+## CPS Conversion
+
+![Alt text](image-9.png)
+
+#!markdown
+
+- We can't use our `while(true)` trick directly here as this function is not tail recursive.
+- We're going to convert to Continuation Passing Style so that we can make it tail recursive.
+- In CPS, where the ordinary version would return, we instead pass a continuation that "executes the rest of the program"
+
+#!csharp
+
+void PrintTree(Tree tree)
+{
+    if (tree is null) return;
+    PrintTree(tree.left); // When we return from this call to PrintTree
+    // We want to run the rest of this code like a function
+    Console.Write($"{tree.value}, ");
+    PrintTree(tree.right);
+    // To here
+    // And run the continuation before we return
+}
+
+#!csharp
+
+// CPS conversion
+void PrintTreeCPS(Tree tree, Action cont)
+{
+    if (tree is not null)
+    {
+        PrintTreeCPS(tree.left, () => // First continuation 
+        {
+            Console.Write($"{tree.value}, ");
+            PrintTreeCPS(tree.right, cont);
+        });
+    }
+    else
+    {
+        cont();
+    }
+}
+
+PrintTreeCPS(tree, () => { }); // Second continuation
+
+#!markdown
+
+## Defunctionalize the Continuation!
+
+![Alt text](image-12.png)
+
+#!markdown
+
+- Now we have a continuation function, we are going to defunctionalize it.
+- We have two possible continuations:
+    - Print the value of the node and the right half of the tree.
+    - Finish!
+- Let's represent these two possiblities as data (defunctionalization!)
+
+#!fsharp
+
+// In F# we might represent the continuation like this as a discriminated union
+type Tree = 
+    | Node of int * Tree * Tree
+    | Empty
+
+type Cont = 
+    | Done
+    | Next of Tree * Cont
+
+#!markdown
+
+### C# Version
+
+#!csharp
+
+// In C# we don't have discriminated unions so we'll represent 'Done' with a null value for Cont
+record Cont(Tree tree, Cont next);
+
+// Apply is the 'interpreter' for the data structure representing the continuation
+void Apply(Cont cont)
+{ 
+    if (cont is not null)
+    {
+        Console.Write($"{cont.tree.value}, ");
+        PrintTreeDefunctionalized(cont.tree.right, cont.next);
+    }
+    else
+    {
+        return;
+    }
+}
+
+void PrintTreeDefunctionalized(Tree tree, Cont cont)
+{
+    if (tree is not null)
+    {
+        PrintTreeDefunctionalized(tree.left, new Cont(tree, cont));
+    }
+    else
+    {
+        Apply(cont);
+    }
+}
+
+PrintTreeDefunctionalized(tree, null);
+
+#!markdown
+
+### Inline the `Apply()` function
+
+#!csharp
+
+// Inlining the Apply function
+
+void PrintTreeDefunctionalized(Tree tree, Cont cont)
+{
+    if (tree is not null)
+    {
+        PrintTreeDefunctionalized(tree.left, new Cont(tree, cont));
+    }
+    else
+    {
+        if (cont is not null)
+        {
+            Console.Write($"{cont.tree.value}, ");
+            PrintTreeDefunctionalized(cont.tree.right, cont.next);
+        }
+        else
+        {
+            return;
+        }
+    }
+}
+
+PrintTreeDefunctionalized(tree, null);
+
+#!markdown
+
+## Tail Call Elimination
+
+![Alt text](image-6.png)
+
+#!markdown
+
+- Where has this gotten us?
+- Well now the calls are tail calls, so we can use our `while(true)` trick!
+
+#!csharp
+
+void PrintTreeIter(Tree tree, Cont cont)
+{
+    while (true) // wrap in while(true)
+    {
+        if (tree is not null)
+        {
+            // PrintTreeDefunctionalized(tree.left, new Cont(tree, cont));
+            // convert function call to update of parameters
+            cont = new Cont(tree, cont);
+            tree = tree.left;
+        }
+        else
+        {
+            if (cont is not null)
+            {
+                Console.Write($"{cont.tree.value}, ");
+                // PrintTreeDefunctionalized(cont.tree.right, cont.next);
+                // convert function call to update of parameters
+                tree = cont.tree.right;
+                cont = cont.next;
+            }
+            else
+            {
+                return;
+            }
+        }
+    }
+}
+
+PrintTreeIter(tree, null);
+
+#!markdown
+
+## Cleanup
+![Alt text](image-5.png)
+
+#!markdown
+
+- We can clean up the iterative code a bit
+- Note that our `Cont` structure is a linked list and is used like a stack, so we can use a stack which is a bit more efficient.
+
+#!csharp
+
+using System.Collections.Generic;
+
+void PrintTreeIter(Tree tree)
+{
+    var stack = new Stack<Tree>();
+    while (true)
+    {
+        if (tree is not null)
+        {
+            stack.Push(tree);
+            tree = tree.left;
+        }
+        else
+        {
+            if (stack.Count > 0)
+            {
+                tree = stack.Pop();
+                Console.Write($"{tree.value}, ");
+                tree = tree.right;
+            }
+            else
+            {
+                return;
+            }
+        }
+    }
+}
+
+PrintTreeIter(tree);
+
+#!markdown
+
+- Now we can refactor the loop slightly to clean things up further
+
+#!csharp
+
+using System.Collections.Generic;
+
+void PrintTreeIter(Tree tree)
+{
+    for (var stack = new Stack<Tree>(); tree is not null || stack.Any(); tree = tree.right)
+    {
+        while (tree is not null)
+        {
+            stack.Push(tree);
+            tree = tree.left;
+        }
+
+        tree = stack.Pop();
+        Console.Write($"{tree.value}, ");
+     }
+}
+
+PrintTreeIter(tree);
+
+#!markdown
+
+## Enlightenment!
+
+![Alt text](image-14.png)
